@@ -21,8 +21,23 @@ public class Demo {
         prod_1.setName("test");
         prod_1.setPrice(new BigDecimal(111));
         var prod_2 = session.find(Product.class, 1);
+
+        var prod = new Product();
+        prod.setId(11);
+        prod.setName("newName");
+        prod.setPrice(new BigDecimal(5555));
+        session.persist(prod);
+
+        session.remove(prod);
+
+        var prod_2 = new Product();
+        prod_2.setId(111);
+        prod_2.setName("newName_111");
+        prod_2.setPrice(new BigDecimal(123));
+        session.persist(prod_2);
+
         session.close();
-        System.out.println(prod_1 == prod_2);
+//        System.out.println(prod_1 == prod_2);
     }
 
 
