@@ -5,15 +5,21 @@ import java.lang.reflect.Field;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Queue;
 import java.util.function.Predicate;
 
+import com.orm.actions.Action;
+import com.orm.actions.DeleteAction;
+import com.orm.actions.InsertAction;
 import com.orm.annotation.Id;
 import com.orm.annotation.Table;
 import com.orm.mapper.SimpleTypesResultMapper;
+import com.orm.utils.EntityUtils;
 
 import lombok.SneakyThrows;
 
@@ -27,6 +33,8 @@ public class Session {
     private Map<EntityKey<?>, Object> cacheMap = new HashMap<>();
     private Map<EntityKey<?>, Object[]> snapshotMap = new HashMap();
 
+    private Queue<Action> actionQueue = new LinkedList<>();
+
     public Session(DataSource dataSource) {
         this.dataSource = dataSource;
     }
@@ -37,10 +45,39 @@ public class Session {
         return entityType.cast(result);
     }
 
-    public void close() {
-        updateIfChanged();
-        cacheMap.clear();
+    public void persist(Object entity) {
+        actionQueue.add(new InsertAction(entity));
+    }
+
+    public void remove(Object entity) {
+        actionQueue.add(new DeleteAction(entity));
+    }
+
+    public void flush() {
+//        updateIfChanged();
         snapshotMap.clear();
+        executeActions();
+        cacheMap.clear();
+    }
+
+    public void close() {
+        flush();
+    }
+
+    private void executeActions() {
+        actionQueue.stream()
+          .sorted(Comparator.comparing(Action::getPriority))
+          .forEach(this::executeAction);
+    }
+
+    @SneakyThrows
+    private void executeAction(Action action) {
+        try (var connection = dataSource.getConnection();
+             var stmt = connection.createStatement()) {
+            var sql = action.prepareQuery();
+            System.out.println(sql);
+            stmt.execute(sql);
+        }
     }
 
     private void updateIfChanged() {
@@ -50,34 +87,6 @@ public class Session {
               var sortedFields = Arrays.stream(el.getValue().getClass().getDeclaredFields())
                 .sorted(Comparator.comparing(Field::getName)).toList();
               var tableName = el.getKey().resultClass().getAnnotation(Table.class).value();
-
-//              StringBuilder sb = new StringBuilder("UPDATE ")
-//                .append(tableName)
-//                .append(" SET ");
-//              var count = 0;
-//              Field idField = null;
-//              Object idFieldValue = null;
-//              for (int i = 0; i < sortedFields.size(); i++) {
-//                  try {
-//                      var field = sortedFields.get(i);
-//                      field.setAccessible(true);
-//                      var cachedFieldValue = field.get(el.getValue());
-//                      if (field.isAnnotationPresent(Id.class)) {
-//                          idField = field;
-//                          idFieldValue = cachedFieldValue;
-//                      }
-//                      if (!cachedFieldValue.equals(fieldValues[i])) {
-//                          count++;
-//                          executeUpdate = true;
-//                          sb.append(sortedFields.get(i).getName()).append(" = ")
-//                            .append(getValue(sortedFields.get(i), cachedFieldValue))
-//                            .append(",");
-//                      }
-//                  } catch (IllegalAccessException e) {
-//                      throw new RuntimeException(e);
-//                  }
-//              }
-//              var sql = addWhereClause(sb, idField, idFieldValue);
               var sql = buildUpdateQuery(tableName, sortedFields, fieldValues, el.getValue());
               executeUpdate(sql);
           });
@@ -105,7 +114,7 @@ public class Session {
                     count++;
                     executeUpdate = true;
                     sb.append(sortedFields.get(i).getName()).append(" = ")
-                      .append(getValue(sortedFields.get(i), cachedFieldValue))
+                      .append(EntityUtils.getValue(sortedFields.get(i), cachedFieldValue))
                       .append(",");
                 }
             } catch (IllegalAccessException e) {
@@ -124,15 +133,8 @@ public class Session {
           .append(" WHERE ")
           .append(idField.getName())
           .append(" = ")
-          .append(getValue(idField, idFieldValue))
+          .append(EntityUtils.getValue(idField, idFieldValue))
           .toString();
-    }
-
-    private String getValue(Field field, Object val) {
-        if (field.getType().equals(String.class)) {
-            return String.format("'%s'", val);
-        }
-        return val.toString();
     }
 
     @SneakyThrows
@@ -141,7 +143,7 @@ public class Session {
             try (var connection = dataSource.getConnection();
                  var statement = connection.createStatement()) {
                 System.out.println(sql);
-            statement.executeUpdate(sql);
+                statement.executeUpdate(sql);
             }
         }
 
